@@ -873,6 +873,67 @@ fix_stuck_vm() {
     read -p "$(print_status "INPUT" "Press Enter to continue...")"
 }
 
+# =====================================================
+# Function: Check how much disk space a VM is using
+# =====================================================
+check_vm_disk_usage() {
+    local vm_name=$1
+
+    if ! load_vm_config "$vm_name"; then
+        return 1
+    fi
+
+    print_status "INFO" "Disk usage for VM: $vm_name"
+    echo "--------------------------------------------------"
+
+    if [[ ! -f "$IMG_FILE" ]]; then
+        print_status "ERROR" "Image file not found: $IMG_FILE"
+        read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        return 1
+    fi
+
+    # Apparent size = the configured/allocated disk size (DISK_SIZE)
+    # Actual size = real bytes currently used on the host disk (qcow2 is sparse)
+    local actual_size
+    actual_size=$(du -h "$IMG_FILE" | cut -f1)
+    local apparent_size
+    apparent_size=$(qemu-img info "$IMG_FILE" 2>/dev/null | grep "virtual size" | sed -E 's/.*\(([0-9]+) bytes\)/\1/' | numfmt --to=iec 2>/dev/null)
+
+    echo "Image file:        $IMG_FILE"
+    echo "Allocated/virtual: ${apparent_size:-$DISK_SIZE}"
+    echo "Actual space used: $actual_size"
+
+    if [[ -f "$SEED_FILE" ]]; then
+        local seed_size
+        seed_size=$(du -h "$SEED_FILE" | cut -f1)
+        echo "Seed ISO size:     $seed_size"
+    fi
+    echo "--------------------------------------------------"
+
+    read -p "$(print_status "INPUT" "Check file sizes inside the VM too? (y/N): ")" -n 1 -r check_inside
+    echo
+
+    if [[ "$check_inside" =~ ^[Yy]$ ]]; then
+        if ! is_vm_running "$vm_name"; then
+            print_status "WARN" "VM '$vm_name' is not running. Start it first, then re-run this check."
+            read -p "$(print_status "INPUT" "Press Enter to continue...")"
+            return 0
+        fi
+
+        print_status "INFO" "Connecting via SSH to inspect disk usage inside the VM..."
+        print_status "INFO" "(You may be prompted for the VM password: $PASSWORD)"
+
+        local remote_cmd='echo "--- Top 20 largest directories ---"; du -ahx / 2>/dev/null | sort -rh | head -20; echo; echo "--- Top 15 largest individual files ---"; find / -xdev -type f -exec du -h {} + 2>/dev/null | sort -rh | head -15'
+
+        if ! ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$USERNAME@localhost" "$remote_cmd"; then
+            print_status "ERROR" "Could not connect via SSH. Make sure the VM has fully booted."
+        fi
+    fi
+
+    echo "--------------------------------------------------"
+    read -p "$(print_status "INPUT" "Press Enter to continue...")"
+}
+
 # Main menu function
 main_menu() {
     while true; do
@@ -907,6 +968,7 @@ main_menu() {
         echo "  9)  Delete useless things (free disk space)"
         if [ $vm_count -gt 0 ]; then
             echo " 10)  Fix Stuck VM"
+            echo " 11)  Check VM disk usage"
         fi
         echo "  0)  Exit"
         echo
@@ -995,6 +1057,16 @@ main_menu() {
                     read -p "$(print_status "INPUT" "Enter VM number to fix: ")" vm_num
                     if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
                         fix_stuck_vm "${vms[$((vm_num-1))]}"
+                    else
+                        print_status "ERROR" "Invalid selection"
+                    fi
+                fi
+                ;;
+            11)
+                if [ $vm_count -gt 0 ]; then
+                    read -p "$(print_status "INPUT" "Enter VM number to check disk usage: ")" vm_num
+                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
+                        check_vm_disk_usage "${vms[$((vm_num-1))]}"
                     else
                         print_status "ERROR" "Invalid selection"
                     fi
