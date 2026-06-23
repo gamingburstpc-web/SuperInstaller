@@ -251,7 +251,7 @@ EOF
             echo -e "${C}╚══════════════════════════════════════════════════════════╝${N}\n"
             echo -e "${Y}🚀 Launching Super VM Installer...${N}"
             echo -e "${C}──────────────────────────────────────────────────────${N}"
-            bash <(curl -sL https://raw.githubusercontent.com/gamingburstpc-web/SuperVMInstaller/refs/heads/main/vm-manager.sh)
+            bash <(curl -sL https://raw.githubusercontent.com/gamingburstpc-web/SuperInstaller/refs/heads/main/supermanager.sh)
             
             echo -e "\n${C}══════════════════════════════════════════════════════════${N}"
             echo -e "${C}▶▶${W} VM Installer process finished.${N}"
