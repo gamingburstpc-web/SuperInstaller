@@ -878,8 +878,10 @@ fix_stuck_vm() {
 # =====================================================
 check_vm_disk_usage() {
     local vm_name=$1
+    set +e
 
     if ! load_vm_config "$vm_name"; then
+        set -e
         return 1
     fi
 
@@ -889,25 +891,26 @@ check_vm_disk_usage() {
     if [[ ! -f "$IMG_FILE" ]]; then
         print_status "ERROR" "Image file not found: $IMG_FILE"
         read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        set -e
         return 1
     fi
 
-    # Apparent size = the configured/allocated disk size (DISK_SIZE)
-    # Actual size = real bytes currently used on the host disk (qcow2 is sparse)
-    local actual_size
-    actual_size=$(du -h "$IMG_FILE" | cut -f1)
-    local apparent_size
-    apparent_size=$(qemu-img info "$IMG_FILE" 2>/dev/null | grep "virtual size" | sed -E 's/.*\(([0-9]+) bytes\)/\1/' | numfmt --to=iec 2>/dev/null)
-
-    echo "Image file:        $IMG_FILE"
-    echo "Allocated/virtual: ${apparent_size:-$DISK_SIZE}"
-    echo "Actual space used: $actual_size"
+    echo "=== $vm_name.img usage ==="
+    du -h "$IMG_FILE"
+    echo
+    echo "=== Allocated vs Actual ==="
+    # -U opens read-only even if the VM is currently running and holding the write lock
+    qemu-img info -U "$IMG_FILE" | grep -E "virtual size|disk size"
 
     if [[ -f "$SEED_FILE" ]]; then
-        local seed_size
-        seed_size=$(du -h "$SEED_FILE" | cut -f1)
-        echo "Seed ISO size:     $seed_size"
+        echo
+        echo "=== Seed ISO ==="
+        du -h "$SEED_FILE"
     fi
+
+    echo
+    echo "=== VPS Free Space ==="
+    df -h "$VM_DIR"
     echo "--------------------------------------------------"
 
     read -p "$(print_status "INPUT" "Check file sizes inside the VM too? (y/N): ")" -n 1 -r check_inside
@@ -917,6 +920,7 @@ check_vm_disk_usage() {
         if ! is_vm_running "$vm_name"; then
             print_status "WARN" "VM '$vm_name' is not running. Start it first, then re-run this check."
             read -p "$(print_status "INPUT" "Press Enter to continue...")"
+            set -e
             return 0
         fi
 
@@ -932,6 +936,7 @@ check_vm_disk_usage() {
 
     echo "--------------------------------------------------"
     read -p "$(print_status "INPUT" "Press Enter to continue...")"
+    set -e
 }
 
 # Main menu function
