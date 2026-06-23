@@ -813,7 +813,7 @@ fix_stuck_vm() {
 # =====================================================
 check_all_disk_usage() {
     print_status "INFO" "=== Entire VPS Disk Space ==="
-    df -h /
+    df -h "$HOME"
     echo
     
     print_status "INFO" "=== Top 10 Largest Files/Folders in Home Directory ==="
