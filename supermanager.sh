@@ -729,89 +729,25 @@ show_vm_performance() {
 }
 
 # =====================================================
-# Function: Delete useless things (dev tooling cleanup)
+# Function: Safe Delete Useless Things (Clear Caches)
 # =====================================================
 cleanup_useless_things() {
-    print_status "INFO" "Scanning for unnecessary dev-tooling caches..."
+    print_status "INFO" "This will clear Android/Flutter build caches to free up space."
+    print_status "WARN" "Target directories:"
+    echo "  - ~/.gradle/caches/"
+    echo "  - ~/.gradle/wrapper/dists/"
+    echo "  - ~/.pub-cache/"
+    echo
+    read -p "$(print_status "INPUT" "Are you sure you want to delete these? (y/N): ")" -n 1 -r
     echo
 
-    # Paths that are safe to clear for someone only using this box for QEMU VMs.
-    # Each is a (description, path) pair.
-    local -a targets=(
-        "Gradle build cache|$HOME/.gradle"
-        "Flutter/Dart package cache|$HOME/.pub-cache"
-        "Android SDK root|$HOME/.androidsdkroot"
-        "Android tooling cache|$HOME/.android"
-        "Android Emulator (AVD) data|$HOME/.emu"
-    )
-
-    local total_found=0
-    echo "The following items were found:"
-    echo "--------------------------------------------------"
-    for entry in "${targets[@]}"; do
-        IFS='|' read -r label path <<< "$entry"
-        if [[ -e "$path" ]]; then
-            local size
-            size=$(du -sh "$path" 2>/dev/null | cut -f1)
-            printf "  %-30s %8s   %s\n" "$label" "$size" "$path"
-            total_found=$((total_found + 1))
-        fi
-    done
-    echo "--------------------------------------------------"
-
-    if [[ $total_found -eq 0 ]]; then
-        print_status "INFO" "Nothing to clean up. You're already lean."
-        read -p "$(print_status "INPUT" "Press Enter to continue...")"
-        return 0
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_status "INFO" "Removing caches..."
+        rm -rf ~/.gradle/caches/ ~/.gradle/wrapper/dists/ ~/.pub-cache/ 2>/dev/null || true
+        print_status "SUCCESS" "Caches cleared successfully!"
+    else
+        print_status "INFO" "Cleanup cancelled."
     fi
-
-    echo
-    print_status "WARN" "These are unrelated to your VMs (Flutter/Android dev caches)."
-    print_status "WARN" "Deleting them is safe unless you build Android/Flutter apps here."
-    read -p "$(print_status "INPUT" "Delete all of the above? (y/N): ")" -n 1 -r
-    echo
-
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_status "INFO" "Cleanup cancelled"
-        read -p "$(print_status "INPUT" "Press Enter to continue...")"
-        return 0
-    fi
-
-    for entry in "${targets[@]}"; do
-        IFS='|' read -r label path <<< "$entry"
-        [[ -e "$path" ]] || continue
-
-        print_status "INFO" "Removing $label..."
-
-        # .emu (and similar) can be a live overlay mount on some cloud IDEs
-        # (e.g. Google IDX/Firebase Studio's Nix-based caching layer).
-        # Try a normal delete first, then fall back to unmounting it.
-        if rm -rf "$path" 2>/dev/null; then
-            print_status "SUCCESS" "$label removed"
-            continue
-        fi
-
-        print_status "WARN" "$label is busy (likely an active mount). Attempting to unmount..."
-
-        if command -v umount &>/dev/null; then
-            umount -l "$path" 2>/dev/null || true
-        elif command -v nix-shell &>/dev/null; then
-            nix-shell -p util-linux --run "umount -l '$path'" 2>/dev/null || true
-        fi
-
-        sleep 1
-
-        if rm -rf "$path" 2>/dev/null; then
-            print_status "SUCCESS" "$label removed after unmount"
-        else
-            print_status "ERROR" "Could not remove $label (still busy). Skipping — try again after restarting the workspace."
-        fi
-    done
-
-    echo
-    print_status "SUCCESS" "Cleanup finished."
-    df -h "$HOME" 2>/dev/null
-    read -p "$(print_status "INPUT" "Press Enter to continue...")"
 }
 
 # =====================================================
@@ -858,8 +794,7 @@ fix_stuck_vm() {
     fi
     rm -f /tmp/imgcheck.log
 
-    # 3. Regenerate the cloud-init seed ISO — the most common cause of a
-    #    VM that hangs forever at "Starting cloud-init job (pre-networking)".
+    # 3. Regenerate the cloud-init seed ISO
     print_status "INFO" "Regenerating cloud-init seed image..."
     rm -f "$SEED_FILE"
     if ! setup_vm_image; then
@@ -874,69 +809,85 @@ fix_stuck_vm() {
 }
 
 # =====================================================
-# Function: Check how much disk space a VM is using
+# Function: Check Overall Disk Usage
 # =====================================================
-check_vm_disk_usage() {
-    local vm_name=$1
-    set +e
+check_all_disk_usage() {
+    print_status "INFO" "=== Entire VPS Disk Space ==="
+    df -h /
+    echo
+    
+    print_status "INFO" "=== Top 10 Largest Files/Folders in Home Directory ==="
+    du -ahx "$HOME" 2>/dev/null | sort -rh | head -10
+    echo
 
-    if ! load_vm_config "$vm_name"; then
-        set -e
-        return 1
+    print_status "INFO" "=== Storage Used by Each VM ==="
+    local vms=($(get_vm_list))
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "  No VMs found."
+    else
+        for vm in "${vms[@]}"; do
+            local img_file="$VM_DIR/$vm.img"
+            local seed_file="$VM_DIR/$vm-seed.iso"
+            local img_size="0B"
+            local seed_size="0B"
+            
+            if [[ -f "$img_file" ]]; then img_size=$(du -h "$img_file" | cut -f1); fi
+            if [[ -f "$seed_file" ]]; then seed_size=$(du -h "$seed_file" | cut -f1); fi
+            
+            printf "  %-15s : Disk Image = %-6s | Seed ISO = %-6s\n" "$vm" "$img_size" "$seed_size"
+        done
     fi
-
-    print_status "INFO" "Disk usage for VM: $vm_name"
     echo "--------------------------------------------------"
+}
 
-    if [[ ! -f "$IMG_FILE" ]]; then
-        print_status "ERROR" "Image file not found: $IMG_FILE"
-        read -p "$(print_status "INPUT" "Press Enter to continue...")"
-        set -e
-        return 1
-    fi
-
-    echo "=== $vm_name.img usage ==="
-    du -h "$IMG_FILE"
+# =====================================================
+# Function: Show All RAM Usage
+# =====================================================
+show_all_ram_usage() {
+    print_status "INFO" "=== VPS Overall RAM Usage ==="
+    local total_ram=$(free -m | awk '/^Mem:/{print $2}')
+    local used_ram=$(free -m | awk '/^Mem:/{print $3}')
+    echo "  VPS RAM: ${used_ram}MB used out of ${total_ram}MB total"
     echo
-    echo "=== Allocated vs Actual ==="
-    # -U opens read-only even if the VM is currently running and holding the write lock
-    qemu-img info -U "$IMG_FILE" | grep -E "virtual size|disk size"
-
-    if [[ -f "$SEED_FILE" ]]; then
-        echo
-        echo "=== Seed ISO ==="
-        du -h "$SEED_FILE"
-    fi
-
-    echo
-    echo "=== VPS Free Space ==="
-    df -h "$VM_DIR"
-    echo "--------------------------------------------------"
-
-    read -p "$(print_status "INPUT" "Check file sizes inside the VM too? (y/N): ")" -n 1 -r check_inside
-    echo
-
-    if [[ "$check_inside" =~ ^[Yy]$ ]]; then
-        if ! is_vm_running "$vm_name"; then
-            print_status "WARN" "VM '$vm_name' is not running. Start it first, then re-run this check."
-            read -p "$(print_status "INPUT" "Press Enter to continue...")"
-            set -e
-            return 0
+    
+    print_status "INFO" "=== RAM Used by Each VM ==="
+    local vms=($(get_vm_list))
+    local running_count=0
+    
+    if [ ${#vms[@]} -eq 0 ]; then
+        echo "  No VMs found."
+    else
+        for vm in "${vms[@]}"; do
+            if is_vm_running "$vm"; then
+                running_count=$((running_count + 1))
+                
+                # Get configured RAM from file
+                local conf_mem="Unknown"
+                if [[ -f "$VM_DIR/$vm.conf" ]]; then
+                    conf_mem=$(grep "^MEMORY=" "$VM_DIR/$vm.conf" | cut -d'"' -f2)
+                fi
+                
+                # Get actual process RSS (Resident Set Size) in KB, convert to MB
+                local pid=$(pgrep -f "qemu-system-x86_64.*$VM_DIR/$vm.img" | head -n 1)
+                local actual_mem="0"
+                if [[ -n "$pid" ]]; then
+                    local rss_kb=$(ps -p "$pid" -o rss= 2>/dev/null || echo 0)
+                    if [[ -n "$rss_kb" && "$rss_kb" -gt 0 ]]; then
+                        actual_mem=$((rss_kb / 1024))
+                    fi
+                fi
+                
+                printf "  %-15s : Allocated = %-6s MB | Actively Using = %-6s MB\n" "$vm" "$conf_mem" "$actual_mem"
+            else
+                printf "  %-15s : (Stopped)\n" "$vm"
+            fi
+        done
+        
+        if [ $running_count -eq 0 ]; then
+            echo "  No VMs are currently running."
         fi
-
-        print_status "INFO" "Connecting via SSH to inspect disk usage inside the VM..."
-        print_status "INFO" "(You may be prompted for the VM password: $PASSWORD)"
-
-        local remote_cmd='echo "--- Top 20 largest directories ---"; du -ahx / 2>/dev/null | sort -rh | head -20; echo; echo "--- Top 15 largest individual files ---"; find / -xdev -type f -exec du -h {} + 2>/dev/null | sort -rh | head -15'
-
-        if ! ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$USERNAME@localhost" "$remote_cmd"; then
-            print_status "ERROR" "Could not connect via SSH. Make sure the VM has fully booted."
-        fi
     fi
-
     echo "--------------------------------------------------"
-    read -p "$(print_status "INPUT" "Press Enter to continue...")"
-    set -e
 }
 
 # Main menu function
@@ -970,10 +921,11 @@ main_menu() {
             echo "  7)  Resize VM disk"
             echo "  8)  Show VM performance"
         fi
-        echo "  9)  Delete useless things (free disk space)"
+        echo "  9)  Delete useless things (clear gradle/pub caches)"
         if [ $vm_count -gt 0 ]; then
             echo " 10)  Fix Stuck VM"
-            echo " 11)  Check VM disk usage"
+            echo " 11)  Check all disk usage"
+            echo " 12)  Check all RAM usage"
         fi
         echo "  0)  Exit"
         echo
@@ -1069,12 +1021,12 @@ main_menu() {
                 ;;
             11)
                 if [ $vm_count -gt 0 ]; then
-                    read -p "$(print_status "INPUT" "Enter VM number to check disk usage: ")" vm_num
-                    if [[ "$vm_num" =~ ^[0-9]+$ ]] && [ "$vm_num" -ge 1 ] && [ "$vm_num" -le $vm_count ]; then
-                        check_vm_disk_usage "${vms[$((vm_num-1))]}"
-                    else
-                        print_status "ERROR" "Invalid selection"
-                    fi
+                    check_all_disk_usage
+                fi
+                ;;
+            12)
+                if [ $vm_count -gt 0 ]; then
+                    show_all_ram_usage
                 fi
                 ;;
             0)
@@ -1086,7 +1038,11 @@ main_menu() {
                 ;;
         esac
         
-        read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        if [[ "$choice" != "1" && "$choice" != "9" && "$choice" != "11" && "$choice" != "12" ]]; then
+            read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        elif [[ "$choice" == "11" || "$choice" == "12" ]]; then
+            read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        fi
     done
 }
 
